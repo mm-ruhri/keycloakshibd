@@ -10,7 +10,10 @@ import org.keycloak.authentication.Authenticator;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.GroupModel;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.Optional;
 
 public class ShibbolethAuthenticator implements Authenticator {
@@ -35,13 +38,52 @@ public class ShibbolethAuthenticator implements Authenticator {
     public void authenticate(final AuthenticationFlowContext context) {
         logger.debug("Got authentication request");
 
+
+	boolean manageGroups = true;
+	boolean setEditorsGroup = false;
+
+	
+	Optional<String> groupRegex = Optional.of(System.getenv("ORCA_GROUP_REGEX"));
+	if (!groupRegex.isPresent()) {
+	    logger.error("No Group Regex defined! Users will not be mapped to group.");
+	    manageGroups = false;
+	} else {
+	    logger.info("Got Group Regex: " + groupRegex.get());
+	}
+		    
+      	Optional<String> editorsGroup = Optional.of(System.getenv("ORCA_EDITORS_GROUP"));
+	if (!editorsGroup.isPresent()) {
+	    logger.error("No Group name given. Users will not be mapped to group.");
+	    manageGroups = false;
+	} 
+	
+
+	if (manageGroups) {
+	    Optional<String> affiliation = context.getHttpRequest().getHttpHeaders().getRequestHeader("affiliation").stream().findAny();
+	    if (!affiliation.isPresent() ) {
+		logger.error("No affiliation header passed.");
+	    } else {
+		Pattern pattern = Pattern.compile(groupRegex.get());
+		Matcher matcher = pattern.matcher(affiliation.get());
+		if (matcher.matches()) {
+		    logger.info("Group regex matches! Adding user to group.");
+		    setEditorsGroup = true;
+		} else {
+		    logger.info("Group regex does not match. Assuring user is not in editors group.");
+		}
+	    }
+	}
+
+
+	
         Optional<String> email = context.getHttpRequest().getHttpHeaders().getRequestHeader("mail").stream().findAny();
-        if (!email.isPresent()) {
+        if (!email.isPresent() || email.get().equals("") || email.get() == null || email.get().equals("(null)")) {
             logger.error("No email header passed. This should not happen!");
+	 
             context.failure(AuthenticationFlowError.INTERNAL_ERROR);
             return;
         }
-        logger.debug("Got mail: " + email.get());
+        logger.info("Got mail: " + email.get());
 
         Optional<String> persistentId = context.getHttpRequest().getHttpHeaders().getRequestHeader("persistent-id").stream().findAny();
         if (!persistentId.isPresent()) {
@@ -50,6 +92,8 @@ public class ShibbolethAuthenticator implements Authenticator {
             return;
         }
         logger.debug("Got persistent id: " + persistentId.get());
+
+   
 
         // Try fetching the user by E-Mail address.
         // This field is indexed and thus querying it is fast. Assuming a user's E-Mail doesn't change often,
@@ -67,9 +111,8 @@ public class ShibbolethAuthenticator implements Authenticator {
             }
             logger.debug("Found user by E-Mail: " + user.getUsername());
             user.setSingleAttribute("persistent-id", persistentId.get());
-            context.setUser(user);
-            context.success();
-        } else {
+	    context.setUser(user);
+	} else {
             // If we can't find the user by E-Mail we check if there exists a user with the corresponding persistent
             // id. This is potentially very slow, thus we first check if the provided E-Mail address is already
             // known to us.
@@ -80,10 +123,9 @@ public class ShibbolethAuthenticator implements Authenticator {
                 logger.debug("Found existing user by persistent ID: " + existingUser.get().getUsername());
                 logger.info("Re-setting E-Mail for user " + persistentId.get());
                 existingUser.get().setEmail(email.get());
-                context.setUser(existingUser.get());
-                context.success();
+		context.setUser(existingUser.get());
             } else {
-                logger.info("Encountered new user, creating new profile");
+                logger.info("Encountered new user, creating new profile.");
                 String firstName = context.getHttpRequest().getHttpHeaders().getRequestHeader("givenName").get(0);
                 String lastName = context.getHttpRequest().getHttpHeaders().getRequestHeader("surname").get(0);
 
@@ -97,12 +139,38 @@ public class ShibbolethAuthenticator implements Authenticator {
                 newUser.setSingleAttribute("persistent-id", persistentId.get());
                 newUser.setEnabled(true);
                 newUser.setEmailVerified(true);
-
-                logger.info("successfully created user");
-                context.setUser(newUser);
-                context.success();
+                logger.info("Successfully created user.");
+		context.setUser(newUser);
             }
         }
+
+	if(manageGroups){
+	    UserModel user2 = context.getUser();
+	    context.clearUser();
+	    boolean foundGroup = false;
+	    for (GroupModel group : context.getRealm().getGroups()) {
+		if (group.getName().equals(editorsGroup.get())) {
+		    if (setEditorsGroup) {
+			if (!user2.isMemberOf(group)) {
+			    user2.joinGroup(group);
+			    logger.info("Adding user to editors group");
+			}
+		    } else {
+			if (user2.isMemberOf(group)) {
+			    user2.leaveGroup(group);
+			    logger.info("Removed user from editors group");
+			}
+		    }
+		    foundGroup = true;
+		    break;
+		}
+	    }
+	    if (!foundGroup) {
+		logger.error("Given groupname not found in realm. Not touched group-assignments.");
+	    }
+	    context.setUser(user2);
+	}
+	context.success();
     }
 
     @Override

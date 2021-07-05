@@ -21,6 +21,17 @@ found, a new user will be created with the provided E-Mail address and the follo
     
 Where `<address>` and `<domain>` are taken from the user's E-Mail `<address>@<domain>`.
 
+
+## Group-Management
+
+Depending on their affiliation-attribute users can be joined a possibly more priviledged group by following means:
+
+Define two environment variables:
+   * `ORCA_GROUP_REGEX` a java-regex matching the affiliation-attribute 
+   * `ORCA_EDITORS_GROUP` a group name, which must be defined in keycloak
+If the regex matches the affiliation, the user will be put in the group. If not, he will be taken out.
+
+
 ## Prerequisites
 
 * OpenID Connect / OAuth 2.0 based authentication method for Keycloak
